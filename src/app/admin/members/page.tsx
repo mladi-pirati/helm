@@ -68,14 +68,7 @@ export default async function MembersPage({
       .where(eq(mladiPiratiMembershipApplications.status, "pending")),
   ]);
   const pendingApplicationsCount = pendingApplications[0]?.value ?? 0;
-  const filtersKey = [
-    filters.q,
-    filters.roleId,
-    filters.sort,
-    filters.status,
-    filters.page,
-    filters.pageSize,
-  ].join(":");
+  const filtersKey = buildMembersListHref(filters);
 
   return (
     <div className="grid gap-6">

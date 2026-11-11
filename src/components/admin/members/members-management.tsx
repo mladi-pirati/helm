@@ -1199,8 +1199,9 @@ export function MembersManagement({
     {
       id: "member",
       header: () => {
-        const SortIcon =
-          filters.sort === "name-asc" ? ArrowDownAZIcon : ArrowUpZAIcon;
+        let SortIcon = ChevronsUpDownIcon;
+        if (filters.sort === "name-asc") SortIcon = ArrowDownAZIcon;
+        if (filters.sort === "name-desc") SortIcon = ArrowUpZAIcon;
 
         return (
           <Button asChild className="-ml-2" size="sm" variant="ghost">

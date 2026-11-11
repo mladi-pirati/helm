@@ -36,7 +36,6 @@ import {
   NO_ROLES_MEMBER_ROLE_FILTER,
   decodeCursor,
   encodeCursor,
-  type MemberListSort,
 } from "@/lib/members";
 import { getProfilePictureDescriptor } from "@/lib/profile-pictures";
 
@@ -187,11 +186,15 @@ export function buildMembersWhere(
   return and(...whereClauses);
 }
 
-export function buildMembersOrderBy(sort: MemberListSort) {
-  const fullName = sql`lower(trim((${members.firstName} || ${" "} || ${members.lastName})))`;
+export function buildMembersOrderBy(sort: MembersListFilters["sort"]) {
+  const sortColumn =
+    sort === "joined-asc" || sort === "joined-desc"
+      ? members.createdAt
+      : sql`lower(trim((${members.firstName} || ${" "} || ${members.lastName})))`;
+  const descending = sort === "name-desc" || sort === "joined-desc";
 
   return [
-    sort === "name-desc" ? desc(fullName) : asc(fullName),
+    descending ? desc(sortColumn) : asc(sortColumn),
     asc(members.username),
     asc(members.id),
   ];

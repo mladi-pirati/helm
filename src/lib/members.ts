@@ -9,6 +9,11 @@ export const memberListStatuses = ["active", "disabled", "all"] as const;
 export type MemberListStatus = (typeof memberListStatuses)[number];
 export const memberListSorts = ["name-asc", "name-desc"] as const;
 export type MemberListSort = (typeof memberListSorts)[number];
+const adminMemberListSorts = [
+  ...memberListSorts,
+  "joined-asc",
+  "joined-desc",
+] as const;
 
 export type MembersSearchParams = {
   page?: string | Array<string>;
@@ -26,7 +31,7 @@ export type MembersListFilters = {
   q: string;
   region: Array<string>;
   roleId: Array<string>;
-  sort: MemberListSort;
+  sort: (typeof adminMemberListSorts)[number];
   status: MemberListStatus;
 };
 
@@ -70,9 +75,7 @@ export function parseMembersFilters(
     q: firstParam(params.q)?.trim() ?? "",
     region: parseRegions(params.region),
     roleId: parseRoleIds(params.roleId),
-    sort: memberListSorts.includes(rawSort as MemberListSort)
-      ? (rawSort as MemberListSort)
-      : "name-asc",
+    sort: adminMemberListSorts.find((sort) => sort === rawSort) ?? "name-asc",
     status: memberListStatuses.includes(rawStatus as MemberListStatus)
       ? (rawStatus as MemberListStatus)
       : "active",

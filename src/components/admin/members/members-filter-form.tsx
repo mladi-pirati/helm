@@ -10,6 +10,13 @@ import {
   type MembersListFilters,
 } from "@/lib/members";
 
+const sortOptions = [
+  { value: "name-asc", label: "Name (A–Z)" },
+  { value: "name-desc", label: "Name (Z–A)" },
+  { value: "joined-desc", label: "Date joined (newest first)" },
+  { value: "joined-asc", label: "Date joined (oldest first)" },
+] satisfies Array<{ value: MembersListFilters["sort"]; label: string }>;
+
 export function MembersFilterForm({
   filters,
 }: {
@@ -21,7 +28,12 @@ export function MembersFilterForm({
   const [query, setQuery] = useState(filters.q);
 
   const applyFilters = useCallback(
-    (updates: Partial<Pick<MembersListFilters, "q">>) => {
+    (updates: Partial<Pick<MembersListFilters, "q" | "sort">>) => {
+      if (debounceRef.current !== null) {
+        clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+
       const baseFilters = {
         ...currentFilters,
         q: query,
@@ -57,26 +69,41 @@ export function MembersFilterForm({
 
   function submitSearch(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
-      debounceRef.current = null;
-    }
     applyFilters({ q: query });
   }
 
   return (
     <form
-      className="grid gap-3 rounded-md border p-4 md:grid-cols-2"
+      className="grid gap-3 rounded-md border p-4 sm:grid-cols-[minmax(0,1fr)_auto]"
       onSubmit={submitSearch}
     >
       <Input
-        className="h-8 rounded-md md:col-span-2"
+        className="h-8 rounded-md"
         name="q"
         onChange={(event) => setQuery(event.target.value)}
         placeholder="Search name, username, email, or Keycloak id"
         type="search"
         value={query}
       />
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        Sort by
+        <select
+          className="h-8 min-w-0 rounded-md border bg-background px-2 text-xs text-foreground"
+          value={currentFilters.sort}
+          onChange={(event) => {
+            const option = sortOptions.find(
+              ({ value }) => value === event.target.value,
+            );
+            if (option) applyFilters({ sort: option.value });
+          }}
+        >
+          {sortOptions.map(({ value, label }) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </label>
     </form>
   );
 }
