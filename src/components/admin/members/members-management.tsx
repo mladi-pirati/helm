@@ -116,6 +116,7 @@ export type MemberListRow = {
     expiresAt: string | null;
     extendedAt: string;
   } | null;
+  dateJoined: string;
   disabledAt: string | null;
   firstName: string;
   id: string;
@@ -1403,6 +1404,11 @@ export function MembersManagement({
           {row.original.residenceRegion ?? "No region"}
         </span>
       ),
+    },
+    {
+      accessorKey: "dateJoined",
+      header: "Date joined",
+      size: 120,
     },
     {
       id: "actions",

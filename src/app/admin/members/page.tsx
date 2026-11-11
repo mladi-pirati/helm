@@ -24,6 +24,13 @@ import {
 } from "@/lib/members";
 import { getMembersPage } from "@/lib/members-query";
 
+const joinedDateFormatter = new Intl.DateTimeFormat("sl-SI", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  timeZone: "Europe/Ljubljana",
+});
+
 export default async function MembersPage({
   searchParams,
 }: {
@@ -131,7 +138,7 @@ export default async function MembersPage({
           ...filters,
           page: Math.max(1, filters.page - 1),
         })}
-        rows={rows.map((row) => ({
+        rows={rows.map(({ createdAt, ...row }) => ({
           ...row,
           currentMembership: row.currentMembership
             ? {
@@ -140,6 +147,7 @@ export default async function MembersPage({
                 extendedAt: row.currentMembership.extendedAt.toISOString(),
               }
             : null,
+          dateJoined: joinedDateFormatter.format(createdAt),
           disabledAt: row.disabledAt?.toISOString() ?? null,
           updatedAt: row.updatedAt.toISOString(),
         }))}

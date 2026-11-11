@@ -212,6 +212,7 @@ export async function getMembersPage(filters: MembersListFilters) {
 
   const baseRowsQuery = db
     .select({
+      createdAt: members.createdAt,
       disabledAt: members.disabledAt,
       firstName: members.firstName,
       id: members.id,
