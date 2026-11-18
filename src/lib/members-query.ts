@@ -17,6 +17,7 @@ import {
 import { db } from "@/db";
 import {
   accessApplications,
+  addresses,
   contacts,
   groupApplicationAccess,
   groupRoles,
@@ -232,9 +233,330 @@ export async function getMembersPage(filters: MembersListFilters) {
     .limit(filters.pageSize)
     .offset(offset);
 
+  const {
+    applicationAccessRows,
+    contactRows,
+    groupRows,
+    membershipRows,
+    roleRows,
+  } = await loadMemberRelations(rows.map((row) => row.id));
+  const emailContactRows = contactRows.filter(
+    (contact) => contact.type === "email",
+  );
+
+  return {
+    pageCount: Math.max(1, Math.ceil(Number(totalCount) / filters.pageSize)),
+    rows: rows.map(
+      ({ profilePictureBlurhash, profilePictureVersion, ...row }) => ({
+        ...row,
+        profilePicture: getProfilePictureDescriptor({
+          ...row,
+          profilePictureBlurhash,
+          profilePictureVersion,
+        }),
+        primaryEmail: getPrimaryEmailForMember(row.id, emailContactRows),
+        currentMembership: getCurrentMembershipForMember(
+          row.id,
+          membershipRows,
+          now,
+        ),
+        applications: getAssignedApplicationsForMember(
+          row.id,
+          applicationAccessRows,
+        ),
+        groups: getAssignedGroupsForMember(row.id, groupRows),
+        roles: getActiveRoleBadgesForMember(row.id, roleRows),
+      }),
+    ),
+    totalCount: Number(totalCount),
+  };
+}
+
+const RELATION_QUERY_CHUNK_SIZE = 1000;
+
+/** Runs a lookup over member IDs in chunks to stay below Postgres parameter limits. */
+async function queryInChunks<T>(
+  memberIds: ReadonlyArray<string>,
+  query: (ids: Array<string>) => Promise<Array<T>>,
+): Promise<Array<T>> {
+  const results: Array<T> = [];
+
+  for (
+    let index = 0;
+    index < memberIds.length;
+    index += RELATION_QUERY_CHUNK_SIZE
+  ) {
+    results.push(
+      ...(await query(
+        memberIds.slice(index, index + RELATION_QUERY_CHUNK_SIZE),
+      )),
+    );
+  }
+
+  return results;
+}
+
+export async function loadMemberRelations(memberIds: ReadonlyArray<string>) {
+  const [
+    contactRows,
+    directRoleRows,
+    groupRoleRows,
+    directApplicationRows,
+    groupApplicationRows,
+    groupRows,
+    membershipRows,
+  ] = await Promise.all([
+    queryInChunks(memberIds, (ids) =>
+      db
+        .select({
+          isPrimary: contacts.isPrimary,
+          memberId: contacts.memberId,
+          sortOrder: contacts.sortOrder,
+          type: contacts.type,
+          value: contacts.value,
+        })
+        .from(contacts)
+        .where(
+          and(
+            inArray(contacts.memberId, ids),
+            inArray(contacts.type, ["email", "phone"]),
+          ),
+        )
+        .orderBy(desc(contacts.isPrimary), asc(contacts.sortOrder)),
+    ),
+    queryInChunks(memberIds, (ids) =>
+      db
+        .select({
+          memberId: memberRoles.memberId,
+          roleId: roles.id,
+          roleKey: roles.key,
+          roleName: roles.name,
+          roleRank: roles.rank,
+        })
+        .from(memberRoles)
+        .innerJoin(roles, eq(memberRoles.roleId, roles.id))
+        .where(inArray(memberRoles.memberId, ids))
+        .orderBy(asc(roles.rank)),
+    ),
+    queryInChunks(memberIds, (ids) =>
+      db
+        .select({
+          memberId: memberGroups.memberId,
+          roleId: roles.id,
+          roleKey: roles.key,
+          roleName: roles.name,
+          roleRank: roles.rank,
+        })
+        .from(memberGroups)
+        .innerJoin(groupRoles, eq(memberGroups.groupId, groupRoles.groupId))
+        .innerJoin(roles, eq(groupRoles.roleId, roles.id))
+        .where(inArray(memberGroups.memberId, ids))
+        .orderBy(asc(roles.rank)),
+    ),
+    queryInChunks(memberIds, (ids) =>
+      db
+        .select({
+          applicationId: accessApplications.id,
+          applicationName: accessApplications.name,
+          memberId: memberApplicationAccess.memberId,
+        })
+        .from(memberApplicationAccess)
+        .innerJoin(
+          accessApplications,
+          eq(memberApplicationAccess.applicationId, accessApplications.id),
+        )
+        .where(
+          and(
+            inArray(memberApplicationAccess.memberId, ids),
+            isNull(accessApplications.archivedAt),
+          ),
+        )
+        .orderBy(asc(accessApplications.name)),
+    ),
+    queryInChunks(memberIds, (ids) =>
+      db
+        .select({
+          applicationId: accessApplications.id,
+          applicationName: accessApplications.name,
+          memberId: memberGroups.memberId,
+        })
+        .from(memberGroups)
+        .innerJoin(
+          groupApplicationAccess,
+          eq(memberGroups.groupId, groupApplicationAccess.groupId),
+        )
+        .innerJoin(
+          accessApplications,
+          eq(groupApplicationAccess.applicationId, accessApplications.id),
+        )
+        .where(
+          and(
+            inArray(memberGroups.memberId, ids),
+            isNull(accessApplications.archivedAt),
+          ),
+        )
+        .orderBy(asc(accessApplications.name)),
+    ),
+    queryInChunks(memberIds, (ids) =>
+      db
+        .select({
+          groupId: groups.id,
+          groupName: groups.name,
+          memberId: memberGroups.memberId,
+        })
+        .from(memberGroups)
+        .innerJoin(groups, eq(memberGroups.groupId, groups.id))
+        .where(inArray(memberGroups.memberId, ids))
+        .orderBy(asc(groups.name)),
+    ),
+    queryInChunks(memberIds, (ids) =>
+      db
+        .select({
+          endedAt: memberships.endedAt,
+          expiresAt: memberships.expiresAt,
+          extendedAt: memberships.extendedAt,
+          memberId: memberships.memberId,
+        })
+        .from(memberships)
+        .where(inArray(memberships.memberId, ids))
+        .orderBy(desc(memberships.extendedAt)),
+    ),
+  ]);
+
+  // Direct and group-derived rows are merged, so re-sort to keep rank/name order.
+  const roleRows: Array<ActiveRoleRow> = [...directRoleRows, ...groupRoleRows]
+    .sort((left, right) => left.roleRank - right.roleRank)
+    .map(({ roleRank: _roleRank, ...row }) => row);
+  const applicationAccessRows: Array<MemberApplicationAccessRow> = [
+    ...directApplicationRows,
+    ...groupApplicationRows,
+  ].sort((left, right) =>
+    left.applicationName.localeCompare(right.applicationName),
+  );
+
+  return {
+    applicationAccessRows,
+    contactRows,
+    groupRows: groupRows satisfies Array<MemberGroupRow>,
+    membershipRows,
+    roleRows,
+  };
+}
+
+export function getCurrentMembershipForMember(
+  memberId: string,
+  membershipRows: Array<{
+    endedAt: Date | null;
+    expiresAt: Date | null;
+    extendedAt: Date;
+    memberId: string;
+  }>,
+  now: Date,
+) {
+  const currentMembership = membershipRows.find(
+    (membership) =>
+      membership.memberId === memberId &&
+      membership.endedAt === null &&
+      (membership.expiresAt === null || membership.expiresAt >= now),
+  );
+
+  return currentMembership
+    ? {
+        expiresAt: currentMembership.expiresAt,
+        extendedAt: currentMembership.extendedAt,
+      }
+    : null;
+}
+
+/**
+ * Loads every member matching the filters (or all members, including disabled
+ * ones, when filters is null) with the relations needed for an export.
+ */
+export async function getMembersForExport(filters: MembersListFilters | null) {
+  const now = new Date();
+  const where = filters ? buildMembersWhere(filters) : undefined;
+  const baseQuery = db
+    .select({
+      createdAt: members.createdAt,
+      dateOfBirth: members.dateOfBirth,
+      disabledAt: members.disabledAt,
+      discordUserId: members.discordUserId,
+      firstName: members.firstName,
+      fullLegalName: members.fullLegalName,
+      id: members.id,
+      keycloakId: members.keycloakId,
+      lastName: members.lastName,
+      notes: members.notes,
+      placeOfBirth: members.placeOfBirth,
+      residenceRegion: members.residenceRegion,
+      username: members.username,
+    })
+    .from(members);
+  const rows = await (where ? baseQuery.where(where) : baseQuery).orderBy(
+    ...buildMembersOrderBy(filters?.sort ?? "name-asc"),
+  );
   const memberIds = rows.map((row) => row.id);
-  const contactRows = memberIds.length
-    ? await db
+  const [relations, addressRows] = await Promise.all([
+    loadMemberRelations(memberIds),
+    queryInChunks(memberIds, (ids) =>
+      db
+        .select({
+          city: addresses.city,
+          country: addresses.country,
+          label: addresses.label,
+          memberId: addresses.memberId,
+          postalCode: addresses.postalCode,
+          street: addresses.street,
+        })
+        .from(addresses)
+        .where(inArray(addresses.memberId, ids))
+        .orderBy(asc(addresses.createdAt)),
+    ),
+  ]);
+  const emailContactRows = relations.contactRows.filter(
+    (contact) => contact.type === "email",
+  );
+  const phoneContactRows = relations.contactRows.filter(
+    (contact) => contact.type === "phone",
+  );
+
+  return rows.map((row) => ({
+    ...row,
+    addresses: addressRows.filter((address) => address.memberId === row.id),
+    applications: getAssignedApplicationsForMember(
+      row.id,
+      relations.applicationAccessRows,
+    ),
+    currentMembership: getCurrentMembershipForMember(
+      row.id,
+      relations.membershipRows,
+      now,
+    ),
+    emails: getOrderedContactValuesForMember(row.id, emailContactRows),
+    groups: getAssignedGroupsForMember(row.id, relations.groupRows),
+    phones: getOrderedContactValuesForMember(row.id, phoneContactRows),
+    primaryEmail: getPrimaryEmailForMember(row.id, emailContactRows),
+    roles: getActiveRoleBadgesForMember(row.id, relations.roleRows),
+  }));
+}
+
+export type MemberExportRecord = Awaited<
+  ReturnType<typeof getMembersForExport>
+>[number];
+
+/** Primary email per member (one row per member), skipping members without one. */
+export async function getMemberEmailsForExport(
+  filters: MembersListFilters | null,
+) {
+  const where = filters ? buildMembersWhere(filters) : undefined;
+  const baseQuery = db.select({ id: members.id }).from(members);
+  const rows = await (where ? baseQuery.where(where) : baseQuery).orderBy(
+    ...buildMembersOrderBy(filters?.sort ?? "name-asc"),
+  );
+  const contactRows = await queryInChunks(
+    rows.map((row) => row.id),
+    (ids) =>
+      db
         .select({
           isPrimary: contacts.isPrimary,
           memberId: contacts.memberId,
@@ -243,144 +565,40 @@ export async function getMembersPage(filters: MembersListFilters) {
         })
         .from(contacts)
         .where(
-          and(
-            inArray(contacts.memberId, memberIds),
-            eq(contacts.type, "email"),
-          ),
-        )
-        .orderBy(desc(contacts.isPrimary), asc(contacts.sortOrder))
-    : [];
-  const roleRows: Array<ActiveRoleRow> = memberIds.length
-    ? [
-        ...(await db
-          .select({
-            memberId: memberRoles.memberId,
-            roleId: roles.id,
-            roleKey: roles.key,
-            roleName: roles.name,
-          })
-          .from(memberRoles)
-          .innerJoin(roles, eq(memberRoles.roleId, roles.id))
-          .where(inArray(memberRoles.memberId, memberIds))
-          .orderBy(asc(roles.rank))),
-        ...(await db
-          .select({
-            memberId: memberGroups.memberId,
-            roleId: roles.id,
-            roleKey: roles.key,
-            roleName: roles.name,
-          })
-          .from(memberGroups)
-          .innerJoin(groupRoles, eq(memberGroups.groupId, groupRoles.groupId))
-          .innerJoin(roles, eq(groupRoles.roleId, roles.id))
-          .where(inArray(memberGroups.memberId, memberIds))
-          .orderBy(asc(roles.rank))),
-      ]
-    : [];
-  const applicationAccessRows: Array<MemberApplicationAccessRow> =
-    memberIds.length
-      ? [
-          ...(await db
-            .select({
-              applicationId: accessApplications.id,
-              applicationName: accessApplications.name,
-              memberId: memberApplicationAccess.memberId,
-            })
-            .from(memberApplicationAccess)
-            .innerJoin(
-              accessApplications,
-              eq(memberApplicationAccess.applicationId, accessApplications.id),
-            )
-            .where(
-              and(
-                inArray(memberApplicationAccess.memberId, memberIds),
-                isNull(accessApplications.archivedAt),
-              ),
-            )
-            .orderBy(asc(accessApplications.name))),
-          ...(await db
-            .select({
-              applicationId: accessApplications.id,
-              applicationName: accessApplications.name,
-              memberId: memberGroups.memberId,
-            })
-            .from(memberGroups)
-            .innerJoin(
-              groupApplicationAccess,
-              eq(memberGroups.groupId, groupApplicationAccess.groupId),
-            )
-            .innerJoin(
-              accessApplications,
-              eq(groupApplicationAccess.applicationId, accessApplications.id),
-            )
-            .where(
-              and(
-                inArray(memberGroups.memberId, memberIds),
-                isNull(accessApplications.archivedAt),
-              ),
-            )
-            .orderBy(asc(accessApplications.name))),
-        ]
-      : [];
-  const groupRows: Array<MemberGroupRow> = memberIds.length
-    ? await db
-        .select({
-          groupId: groups.id,
-          groupName: groups.name,
-          memberId: memberGroups.memberId,
-        })
-        .from(memberGroups)
-        .innerJoin(groups, eq(memberGroups.groupId, groups.id))
-        .where(inArray(memberGroups.memberId, memberIds))
-        .orderBy(asc(groups.name))
-    : [];
-  const membershipRows = memberIds.length
-    ? await db
-        .select({
-          endedAt: memberships.endedAt,
-          expiresAt: memberships.expiresAt,
-          extendedAt: memberships.extendedAt,
-          memberId: memberships.memberId,
-        })
-        .from(memberships)
-        .where(inArray(memberships.memberId, memberIds))
-        .orderBy(desc(memberships.extendedAt))
-    : [];
+          and(inArray(contacts.memberId, ids), eq(contacts.type, "email")),
+        ),
+  );
+  const seen = new Set<string>();
+  const emails: Array<string> = [];
 
-  return {
-    pageCount: Math.max(1, Math.ceil(Number(totalCount) / filters.pageSize)),
-    rows: rows.map(({ profilePictureBlurhash, profilePictureVersion, ...row }) => ({
-      ...row,
-      profilePicture: getProfilePictureDescriptor({
-        ...row,
-        profilePictureBlurhash,
-        profilePictureVersion,
-      }),
-      primaryEmail: getPrimaryEmailForMember(row.id, contactRows),
-      currentMembership: (() => {
-        const currentMembership = membershipRows.find(
-          (membership) =>
-            membership.memberId === row.id &&
-            membership.endedAt === null &&
-            (membership.expiresAt === null || membership.expiresAt >= now),
-        );
+  for (const row of rows) {
+    const email = getPrimaryEmailForMember(row.id, contactRows)?.trim();
+    if (!email) continue;
+    const normalized = email.toLowerCase();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    emails.push(email);
+  }
 
-        return currentMembership
-          ? {
-              expiresAt: currentMembership.expiresAt,
-              extendedAt: currentMembership.extendedAt,
-            }
-          : null;
-      })(),
-      applications: getAssignedApplicationsForMember(
-        row.id,
-        applicationAccessRows,
-      ),
-      groups: getAssignedGroupsForMember(row.id, groupRows),
-      roles: getActiveRoleBadgesForMember(row.id, roleRows),
-    })),
-    totalCount: Number(totalCount),
-  };
+  return emails;
+}
+
+export function getOrderedContactValuesForMember(
+  memberId: string,
+  contactRows: Array<{
+    isPrimary: boolean;
+    memberId: string;
+    sortOrder: number;
+    value: string;
+  }>,
+) {
+  return contactRows
+    .filter((contact) => contact.memberId === memberId)
+    .sort((left, right) => {
+      if (left.isPrimary !== right.isPrimary) return left.isPrimary ? -1 : 1;
+      return left.sortOrder - right.sortOrder;
+    })
+    .map((contact) => contact.value);
 }
 
 export function getActiveRoleBadgesForMember(

@@ -5,6 +5,7 @@ import type { NextRequest } from "next/server";
 import { db } from "@/db";
 import { mladiPiratiMembershipApplications } from "@/db/schema";
 import { requirePermission } from "@/lib/auth/permissions";
+import { toCsvRow } from "@/lib/csv";
 import {
   membershipApplicationStatusLabels,
   parseMembershipApplicationsFilters,
@@ -35,25 +36,6 @@ const CSV_HEADERS = [
   "consentsToDataProcessing",
   "acceptsStatuteAndProgram",
 ] as const;
-
-function escapeCsvField(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "";
-  }
-
-  const stringValue =
-    value instanceof Date ? value.toISOString() : String(value);
-
-  if (/[",\r\n]/.test(stringValue)) {
-    return `"${stringValue.replace(/"/g, '""')}"`;
-  }
-
-  return stringValue;
-}
-
-function toCsvRow(values: ReadonlyArray<unknown>): string {
-  return values.map(escapeCsvField).join(",");
-}
 
 export async function GET(request: NextRequest) {
   await requirePermission("members.read");

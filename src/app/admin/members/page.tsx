@@ -1,6 +1,7 @@
 import { asc, count, eq, isNull } from "drizzle-orm";
 import Link from "next/link";
 
+import { ExportMembersDialog } from "@/components/admin/members/export-members-dialog";
 import { MembersManagement } from "@/components/admin/members/members-management";
 import { MembersFilterForm } from "@/components/admin/members/members-filter-form";
 import { Badge } from "@/components/ui/badge";
@@ -87,6 +88,7 @@ export default async function MembersPage({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <ExportMembersDialog filteredCount={totalCount} filters={filters} />
           {permissions.includes("members.manage_onboarding") ? (
             <Button asChild variant="outline">
               <Link href="/admin/members/onboarding">Onboarding</Link>
